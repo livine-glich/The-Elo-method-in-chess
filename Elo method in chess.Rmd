@@ -1,0 +1,528 @@
+---
+title: "The Elo Method in Chess"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  warning = FALSE,
+  message = FALSE
+)
+```
+
+
+# Introduction
+
+This report analyzes a chess dataset using both point ratings and Elo ratings. The objective is to compare the two ranking systems and investigate how the number of played games affects player rankings.
+
+## Challenge 1: White Advantage
+
+In chess, the player controlling the white pieces has the advantage of moving first.
+
+In the training dataset:
+
+White wins: 32.5%
+Black wins: 23.4%
+Draws: 44.1%
+
+This suggests that moving first provides a measurable competitive advantage.
+
+```{r message=FALSE, warning=FALSE}
+library(readr)
+library(dplyr)
+library(ggplot2)
+library(tidyr)
+```
+
+```{r}
+file = "C:/Users/Livine/Desktop/data science/The Elo method in chess/data.csv"
+outcomes = read_csv(file)
+head(outcomes)
+```
+
+
+
+# Challenge 2 - Point Ratings
+
+The point rating system assigns:
+
+- 1 point for a win;
+- 0.5 points for a draw;
+- 0 points for a defeat.
+
+To compute the total number of points earned by a player, we define the following function:
+
+```{r}
+rating <- function(scores) {
+  sum(scores)
+}
+```
+
+Since a player can appear either as White or Black, we first construct a dataset containing all player scores.
+
+```{r}
+player_score <- bind_rows(
+  outcomes |>
+    transmute(
+      player = White,
+      score = Score
+    ),
+  outcomes |>
+    transmute(
+      player = Black,
+      score = 1 - Score
+    )
+)
+```
+
+The point rating of each player is obtained by summing the scores achieved across all games.
+
+```{r}
+player_ratings <- player_score |>
+  group_by(player) |>
+  summarise(
+    rating = rating(score)
+  )
+
+head(player_ratings)
+```
+
+The distribution of point ratings is visualized through the following histogram.
+
+```{r}
+ggplot(
+  player_ratings,
+  aes(x = rating)
+) +
+  geom_histogram(
+    bins = 30,
+    fill = "steelblue",
+    color = "black"
+  ) +
+  labs(
+    title = "Distribution of Point Ratings",
+    x = "Point Rating",
+    y = "Number of Players"
+  )
+```
+
+After plotting the distribution, we observe that:
+
+- most players have relatively low ratings;
+- fewer players achieve high ratings;
+- the distribution is right-skewed.
+
+This behaviour is expected because point ratings are cumulative. Players who participate in a larger number of games have more opportunities to earn points and therefore accumulate larger scores. Consequently, point ratings reflect not only player strength but also the number of games played.
+
+
+# Challenge 3
+
+An interesting property of Elo ratings is that the sum of all player ratings is always $0$. Formally show this property. *(Hint: use the fact that $s_{i,j} + s_{j,i} = 1$ and $\mu_{i,j} + \mu_{j,i} = 1$)*
+
+Let the set of all players be $P$. When the system is initialized, every player $k \in P$ starts with an initial rating of $0$:
+$$r_k = 0 \quad \forall k \in P$$
+
+Therefore, the initial sum of all player ratings is exactly $0$:
+$$\sum_{k \in P} r_k = 0$$
+
+Consider a single match played between player $i$ and player $j$. Their updated ratings ($r_i'$ and $r_j'$) are defined by the Elo update formulas:
+
+$$r_i' = r_i + \kappa(s_{i,j} - \mu_{i,j})$$
+$$r_j' = r_j + \kappa(s_{j,i} - \mu_{j,i})$$
+
+To find the new combined rating of these two players, we add the two equations together:
+
+$$r_i' + r_j' = r_i + r_j + \kappa \Big[ (s_{i,j} + s_{j,i}) - (\mu_{i,j} + \mu_{j,i}) \Big]$$
+
+Using the given properties of match outcomes and expected scores:
+* $s_{i,j} + s_{j,i} = 1$ *(The actual scores of both players sum to 1)*
+* $\mu_{i,j} + \mu_{j,i} = 1$ *(The expected probabilities of both players sum to 1)*
+
+We substitute these values into the equation:
+
+$$r_i' + r_j' = r_i + r_j + \kappa \Big[ 1 - 1 \Big]$$
+$$r_i' + r_j' = r_i + r_j + \kappa(0)$$
+$$r_i' + r_j' = r_i + r_j$$
+
+Because $r_i' + r_j' = r_i + r_j$, the total rating point exchange between any two players is a zero-sum transaction. Ratings are neither created nor destroyed; they are simply transferred from one player to another. 
+
+Since the system starts with a total sum of $0$ and every individual match strictly preserves this total, **the sum of all player ratings remains equal to $0$ for the entire duration of the Elo process.** $\blacksquare$
+
+
+# Challenge 4
+
+Write a function that computes the player Elo rating (set $\zeta = 400$ and $\kappa = 25$). *(Hint: take advantage of the 0-sum property to optimize the code).* Observe its distribution: why is it different from the point distribution? Verify the 0-sum property for Elo’s ratings.
+
+
+## Step 1: Collect All Player IDs
+
+First, we extract and sort all unique player IDs from both the White and Black columns.
+
+```{r step-1}
+players <- sort(
+  unique(
+    c(outcomes$White, outcomes$Black)
+  )
+) 
+```
+
+## Step 2: Initialize Ratings
+
+We initialize all players with a starting rating of 0.
+
+```{r step-2}
+ratings <- setNames(
+  rep(0, length(players)),
+  players
+)
+
+# Example verification for player "10"
+ratings["10"]
+```
+
+## Step 3: Optimized Elo Function
+
+Since the Elo system is zero-sum ($r_i' + r_j' = r_i + r_j$), the rating points gained by one player are exactly equal to the points lost by the other. We can calculate the rating shift.
+```{r}
+elo_ratings <- function(outcomes,
+                        zeta = 400,
+                        kappa = 25) {
+
+  players <- sort(
+    unique(
+      c(outcomes$White,
+        outcomes$Black)
+    )
+  )
+
+  ratings <- setNames(
+    rep(0, length(players)),
+    players
+  )
+
+  for (i in 1:nrow(outcomes)) {
+
+    white <- as.character(
+      outcomes$White[i]
+    )
+
+    black <- as.character(
+      outcomes$Black[i]
+    )
+
+    score_white <- outcomes$Score[i]
+
+    score_black <- 1 - score_white
+
+    rating_white <- ratings[white]
+
+    rating_black <- ratings[black]
+
+    mu_white <-
+      1 /
+      (
+        1 +
+        10^(
+          -(rating_white -
+              rating_black)/zeta
+        )
+      )
+
+    mu_black <- 1 - mu_white
+
+    ratings[white] <-
+      rating_white +
+      kappa *
+      (score_white - mu_white)
+
+    ratings[black] <-
+      rating_black +
+      kappa *
+      (score_black - mu_black)
+
+  }
+
+  tibble(
+    player = as.numeric(names(ratings)),
+    elo = as.numeric(ratings)
+  )
+}
+```
+
+## Step 4: We run the algorithm
+
+```{r step-4}
+elo <- elo_ratings(outcomes)
+
+head(elo)
+```
+
+##Step  5: We plot the distribution
+
+```{r step-5}
+library(ggplot2)
+
+ggplot(elo, aes(x = elo)) +
+  geom_histogram(
+    bins = 40,
+    fill = "steelblue",
+    color = "black"
+  ) +
+  labs(
+    title = "Distribution of Elo Ratings",
+    x = "Elo Rating",
+    y = "Count"
+  ) +
+  theme_minimal()
+```
+
+
+
+
+Why is the Elo distribution different from the raw point distribution?
+
+1. A standard point distribution treats every win equally (1 point regardless of the opponent). Elo scales dynamically based on the strength of the opponent. Beating a high-ranked player grants significantly more Elo points than beating a novice.
+
+2. Because Elo is zero-sum, ratings continuously balance out. The distribution tends to look more Gaussian (bell-shaped) around 0, whereas raw points are strictly bounded by 0 and the number of games played, often leading to heavily skewed, non-normal distributions.
+
+
+## Step 6: Verification of the Zero-Sum Property
+
+We sum the final Elo values across all players to verify that the total net change equals zero.
+
+```{r step-6}
+sum(elo$elo)
+```
+
+The output is an infinitesimally small number close to 0, representing floating-point precision error inherent to computer arithmetic. This confirms the zero-sum property holds.
+
+# Challenge 5
+
+Are point and Elo ratings correlated? Are top Elo players overlapping with top point players?
+
+## Step 1: Join Datasets
+
+We merge the raw point ratings (`player_ratings`) and calculated Elo ratings (`elo`) by player ID to enable a direct comparison.
+
+```{r join-ratings}
+ratings <- inner_join(
+  player_ratings,
+  elo,
+  by = "player"
+)
+
+ratings
+```
+
+## Step 2: Visualize the Correlation
+
+We construct a scatter plot to visually inspect the relationship between the two rating types, adding a linear regression line to highlight the overall trend.
+
+```{r correlation-plot}
+ggplot(
+  ratings,
+  aes(
+    x = rating,
+    y = elo
+  )
+) +
+  geom_point(alpha = 0.4) +
+  geom_smooth(
+    method = "lm",
+    se = FALSE,
+    color = "red"
+  ) +
+  labs(
+    x = "Point Rating",
+    y = "Elo Rating",
+    title = "Point Rating vs Elo Rating"
+  ) +
+  theme_minimal()
+```
+
+## Step 3: Extract Top Players
+
+We identify the top 10 players according to their raw point rating and compare them against the top 10 players ranked by Elo rating.
+
+```{r top-players}
+top_points <- ratings |>
+  arrange(desc(rating)) |>
+  slice_head(n = 10)
+
+top_elo <- ratings |>
+  arrange(desc(elo)) |>
+  slice_head(n = 10)
+```
+
+## Step 4: Analyze Overlap
+
+We find which unique player IDs appear in both top 10 groups and calculate the total size of this overlap.
+
+```{r overlap-analysis}
+overlap <- intersect(
+  top_points$player,
+  top_elo$player
+)
+
+# Display overlapping player IDs
+overlap
+```
+
+```{r}
+# Count of overlapping players
+length(overlap)
+```
+
+
+## Step 5: Compute Correlation Coefficient
+We compute the exact Pearson correlation coefficient to mathematically define the strength and direction of the relationship.
+
+```{r correlation-coefficient}
+cor(ratings$rating, ratings$elo)
+```
+
+Point and Elo ratings are highly positively correlated, with a strong Pearson coefficient of approximately 0.72. 
+
+The scatter plot displays a clear upward trend from left to right, confirmed by the positive slope of the linear regression line. This strong overall correlation is expected because players who win matches consistently will naturally accumulate both raw points and higher Elo ratings.
+
+However, despite this strong overall trend, there is almost **no overlap at the very top of the leaderboards**, with only 1 player appearing in both top 10 lists. 
+
+This stark divergence among elite players happens because raw point ratings strictly reward match volume, allowing an average player to climb the ranks simply by playing an immense number of games. Conversely, the Elo system evaluates performance quality relative to opponent strength. An elite player with a flawless win rate over fewer matches against top-tier opponents will dominate the Elo leaderboard, but fail to break into the top point ratings due to a lack of sheer game volume.
+
+
+
+# Challenge 6
+
+Test if the number of played games has an effect on the Elo and point player ratings.
+
+
+## Step 1: Count Games Played per Player
+
+We tally the total number of matches each player has played, separating games played as White and games played as Black
+
+```{r count-games}
+white_games <- outcomes |>
+  count(
+    player = White,
+    name = "white_games"
+  )
+
+black_games <- outcomes |>
+  count(
+    player = Black,
+    name = "black_games"
+  )
+```
+
+## Step 2: Aggregate Total Games
+
+We merge the white and black game counts using a full_join. Missing records (NA) are replaced with 0 for players who only played as one color, and a final games total is calculated.
+
+```{r aggregate-games}
+games <- full_join(
+  white_games,
+  black_games,
+  by = "player"
+) |>
+  mutate(
+    white_games = replace_na(white_games, 0),
+    black_games = replace_na(black_games, 0),
+    games = white_games + black_games
+  ) |>
+  select(player, games)
+```
+
+## Step 3: Combine with Performance Ratings
+
+We join the aggregated match totals with our existing ratings dataset containing both point and Elo performance scores.
+
+```{r}
+analysis <- inner_join(
+  ratings,
+  games,
+  by = "player"
+)
+
+analysis
+```
+
+## Step 4: Analyze Volume Effect on Point Ratings
+
+We compute the correlation coefficient and plot a scatter trend line to inspect how total games played influence a player's cumulative point rating.
+
+```{r}
+# Compute point rating correlation
+cor(
+  analysis$games,
+  analysis$rating
+)
+
+# Plot point rating vs games volume
+ggplot(
+  analysis,
+  aes(
+    x = games,
+    y = rating
+  )
+) +
+  geom_point(alpha = 0.4) +
+  geom_smooth(
+    method = "lm",
+    se = FALSE,
+    color = "red"
+  ) +
+  labs(
+    x = "Total Games Played",
+    y = "Point Rating",
+    title = "Games Played vs Point Rating"
+  ) +
+  theme_minimal()
+```
+
+## Step 5: Analyze volume effect on Elo ratings
+
+We repeat the analysis for Elo ratings to evaluate whether playing more games has an inflationary or deflationary impact on skill evaluation.
+
+```{r elo-vs-volume}
+# Compute Elo rating correlation
+cor(
+  analysis$games,
+  analysis$elo
+)
+
+# Plot Elo rating vs games volume
+ggplot(
+  analysis,
+  aes(
+    x = games,
+    y = elo
+  )
+) +
+  geom_point(alpha = 0.4) +
+  geom_smooth(
+    method = "lm",
+    se = FALSE,
+    color = "red"
+  ) +
+  labs(
+    x = "Total Games Played",
+    y = "Elo Rating",
+    title = "Games Played vs Elo Rating"
+  ) +
+  theme_minimal()
+```
+
+Raw point ratings show a **near-perfect positive correlation (0.99)** with total games played. 
+
+Because point rating systems accumulate values monotonically (1 point for a win, 0.5 for a draw), activity volume dictates the maximum threshold of a player's raw score. An average player participating in 100 matches has vastly more opportunities to accumulate points than an elite player who only participates in 5 matches, explaining the linear trend line.
+
+In pure theory, Elo ratings should show a flat or near-zero correlation with total games played, because Elo measures skill quality rather than quantity. However, this specific dataset reveals a **moderately strong positive correlation of 0.64** between games played and Elo rating. 
+
+This unexpected upward trend in Elo can be attributed to two main factors:
+1. **Selection and Survivor Bias:** Stronger players are highly likely to remain active and play more matches over time, while struggling players who lose their initial matches may quickly become inactive or drop out. This leaves a high concentration of high-Elo players in the high-volume game categories.
+2. **Rating Convergence:** Since all players initialize at an arbitrary 0 rating, skilled players require a sustained volume of games to climb away from the baseline and reach their true, higher skill ceilings. 
+
+
+
+
